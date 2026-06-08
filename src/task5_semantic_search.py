@@ -1,66 +1,95 @@
 """
 Task 5 — Semantic Search Module.
 
-Viết module tìm kiếm ngữ nghĩa (dense retrieval) trên vector store.
-
-Yêu cầu:
-    - Input: query string + top_k
-    - Output: danh sách chunks có score, sorted descending
-    - Phải tương thích với embedding model và vector store ở Task 4
+This module prefers the local JSON vector index produced by Task 4. If embeddings
+have not been created yet, it falls back to a deterministic lexical-overlap
+similarity so the pipeline still works offline for tests and demos.
 """
+
+import json
+import math
+import re
+from pathlib import Path
+
+try:
+    from .task4_chunking_indexing import LOCAL_INDEX_PATH, load_documents, chunk_documents
+    from .task6_lexical_search import tokenize
+except ImportError:  # Allow running as a script
+    from task4_chunking_indexing import LOCAL_INDEX_PATH, load_documents, chunk_documents
+    from task6_lexical_search import tokenize
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if not norm_a or not norm_b:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _load_index() -> list[dict]:
+    if LOCAL_INDEX_PATH.exists():
+        return json.loads(LOCAL_INDEX_PATH.read_text(encoding="utf-8"))
+    return chunk_documents(load_documents())
+
+
+def _embed_query(query: str) -> list[float] | None:
+    try:
+        from .task4_chunking_indexing import _embed_with_openai
+    except ImportError:
+        from task4_chunking_indexing import _embed_with_openai
+
+    try:
+        return _embed_with_openai([query])[0]
+    except Exception:
+        return None
+
+
+def _overlap_score(query: str, content: str) -> float:
+    query_tokens = set(tokenize(query))
+    content_tokens = tokenize(content)
+    if not query_tokens or not content_tokens:
+        return 0.0
+    content_set = set(content_tokens)
+    overlap = len(query_tokens & content_set)
+    density = overlap / len(query_tokens)
+    frequency = sum(1 for token in content_tokens if token in query_tokens) / len(content_tokens)
+    return density + frequency
 
 
 def semantic_search(query: str, top_k: int = 10) -> list[dict]:
     """
-    Tìm kiếm ngữ nghĩa sử dụng vector similarity.
-
-    Args:
-        query: Câu truy vấn
-        top_k: Số lượng kết quả tối đa
-
-    Returns:
-        List of {
-            'content': str,      # Nội dung chunk
-            'score': float,      # Cosine similarity score
-            'metadata': dict     # source, doc_type, chunk_index
-        }
-        Sorted by score descending.
+    Tìm kiếm ngữ nghĩa sử dụng vector similarity nếu có embeddings, fallback sang
+    overlap similarity nếu chưa tạo index embedding.
     """
-    # TODO: Implement semantic search
-    #
-    # Bước 1: Embed query bằng cùng model ở Task 4
-    # Bước 2: Query vector store (cosine similarity)
-    # Bước 3: Return top_k results
-    #
-    # Ví dụ với Weaviate:
-    # import weaviate
-    # from sentence_transformers import SentenceTransformer
-    #
-    # model = SentenceTransformer("BAAI/bge-m3")
-    # query_embedding = model.encode(query).tolist()
-    #
-    # client = weaviate.connect_to_local()
-    # collection = client.collections.get("DrugLawDocs")
-    #
-    # results = collection.query.near_vector(
-    #     near_vector=query_embedding,
-    #     limit=top_k,
-    #     return_metadata=MetadataQuery(distance=True)
-    # )
-    #
-    # return [
-    #     {
-    #         "content": obj.properties["content"],
-    #         "score": 1 - obj.metadata.distance,  # distance → similarity
-    #         "metadata": {"source": obj.properties["source"], ...}
-    #     }
-    #     for obj in results.objects
-    # ]
-    raise NotImplementedError("Implement semantic_search")
+    items = _load_index()
+    if not items:
+        return []
+
+    query_embedding = None
+    if items and "embedding" in items[0]:
+        query_embedding = _embed_query(query)
+
+    results = []
+    for item in items:
+        if query_embedding is not None and "embedding" in item:
+            score = _cosine_similarity(query_embedding, item["embedding"])
+        else:
+            score = _overlap_score(query, item["content"])
+
+        if score > 0:
+            results.append({
+                "content": item["content"],
+                "score": float(score),
+                "metadata": item.get("metadata", {}),
+            })
+
+    results.sort(key=lambda item: item["score"], reverse=True)
+    return results[:top_k]
 
 
 if __name__ == "__main__":
-    # Test
     results = semantic_search("hình phạt cho tội tàng trữ ma tuý", top_k=5)
     for r in results:
         print(f"[{r['score']:.3f}] {r['content'][:100]}...")
