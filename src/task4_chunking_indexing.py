@@ -8,8 +8,10 @@ Hướng dẫn:
     4. Index vào vector store (Weaviate khuyến cáo)
 """
 
+import hashlib
 import json
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -142,12 +144,37 @@ def _embed_with_openai(texts: list[str]) -> list[list[float]]:
 
     from openai import OpenAI
 
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=5.0)
     response = client.embeddings.create(
         model=EMBEDDING_MODEL,
         input=texts,
     )
     return [item.embedding for item in response.data]
+
+
+def embed_texts_locally(texts: list[str]) -> list[list[float]]:
+    """
+    Tạo hashing embeddings local, deterministic, không cần API.
+
+    Đây là fallback khi cloud embedding bị chặn hoặc thiếu key. Vector vẫn được
+    lưu trong local JSON và Task 5 vẫn dùng cosine similarity để search.
+    """
+    return [_hashing_embedding(text) for text in texts]
+
+
+def _hashing_embedding(text: str, dim: int = 384) -> list[float]:
+    tokens = re.findall(r"\w+", text.lower(), flags=re.UNICODE)
+    vector = [0.0] * dim
+    for token in tokens:
+        digest = hashlib.sha256(token.encode("utf-8")).digest()
+        index = int.from_bytes(digest[:4], "big") % dim
+        sign = 1.0 if digest[4] % 2 == 0 else -1.0
+        vector[index] += sign
+
+    norm = sum(value * value for value in vector) ** 0.5
+    if norm:
+        vector = [value / norm for value in vector]
+    return vector
 
 
 def embed_chunks(chunks: list[dict]) -> list[dict]:
@@ -168,12 +195,19 @@ def embed_chunks(chunks: list[dict]) -> list[dict]:
     for start in range(0, len(texts), batch_size):
         end = start + batch_size
         batch_texts = texts[start:end]
-        batch_embeddings = _embed_with_openai(batch_texts)
+        try:
+            batch_embeddings = _embed_with_openai(batch_texts)
+            embedding_source = "cloud"
+        except Exception as exc:
+            print(f"  ⚠ Cloud embedding failed ({exc}). Falling back to local hashing embeddings.")
+            batch_embeddings = embed_texts_locally(batch_texts)
+            embedding_source = "local_hashing"
 
         for chunk, embedding in zip(chunks[start:end], batch_embeddings):
             embedded_chunks.append({
                 **chunk,
                 "embedding": embedding,
+                "embedding_source": embedding_source,
             })
 
         print(f"  Embedded {min(end, len(texts))}/{len(texts)} chunks")

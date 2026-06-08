@@ -12,10 +12,10 @@ import re
 from pathlib import Path
 
 try:
-    from .task4_chunking_indexing import LOCAL_INDEX_PATH, load_documents, chunk_documents
+    from .task4_chunking_indexing import LOCAL_INDEX_PATH, load_documents, chunk_documents, embed_texts_locally
     from .task6_lexical_search import tokenize
 except ImportError:  # Allow running as a script
-    from task4_chunking_indexing import LOCAL_INDEX_PATH, load_documents, chunk_documents
+    from task4_chunking_indexing import LOCAL_INDEX_PATH, load_documents, chunk_documents, embed_texts_locally
     from task6_lexical_search import tokenize
 
 
@@ -34,7 +34,10 @@ def _load_index() -> list[dict]:
     return chunk_documents(load_documents())
 
 
-def _embed_query(query: str) -> list[float] | None:
+def _embed_query(query: str, embedding_source: str | None = None) -> list[float] | None:
+    if embedding_source == "local_hashing":
+        return embed_texts_locally([query])[0]
+
     try:
         from .task4_chunking_indexing import _embed_with_openai
     except ImportError:
@@ -43,6 +46,8 @@ def _embed_query(query: str) -> list[float] | None:
     try:
         return _embed_with_openai([query])[0]
     except Exception:
+        if embedding_source:
+            return embed_texts_locally([query])[0]
         return None
 
 
@@ -69,7 +74,7 @@ def semantic_search(query: str, top_k: int = 10) -> list[dict]:
 
     query_embedding = None
     if items and "embedding" in items[0]:
-        query_embedding = _embed_query(query)
+        query_embedding = _embed_query(query, items[0].get("embedding_source"))
 
     results = []
     for item in items:

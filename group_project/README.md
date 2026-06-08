@@ -170,9 +170,26 @@ run_dashboard()
 
 ## Kiến Trúc Hệ Thống
 
+Sản phẩm nhóm hiện dùng kiến trúc chatbot RAG với giao diện Node.js và backend Python FastAPI để tái sử dụng pipeline đã làm ở bài cá nhân.
+
+```text
+Node.js / React UI (web/)
+  │
+  └── POST http://127.0.0.1:8000/chat
+        │
+        ▼
+Python FastAPI backend (api/main.py)
+  │
+  └── src.task10_generation.generate_with_citation()
+        │
+        └── src.task9_retrieval_pipeline.retrieve()
+              ├── semantic_search
+              ├── lexical_search / BM25
+              ├── RRF fusion + reranking
+              └── PageIndex-like fallback
 ```
-[Vẽ diagram kiến trúc ở đây]
-```
+
+Ghi chú: bản demo không yêu cầu chạy vector database/Docker. Pipeline hiện dùng Markdown chunks local và có thể dùng local JSON embedding index nếu đã tạo. Có thể nâng cấp sang Weaviate bằng Docker sau nếu cần hybrid vector database thật.
 
 ---
 
@@ -189,15 +206,67 @@ run_dashboard()
 
 ## Hướng Dẫn Chạy
 
-```bash
-# Cài đặt dependencies
-pip install -r requirements.txt
+### 1. Cài đặt backend Python
 
-# Chạy app
-streamlit run app.py
-# hoặc
-chainlit run app.py
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 ```
+
+Tạo `.env` từ `.env.example` nếu muốn dùng API generation thật. Nếu không có API key, chatbot vẫn trả lời bằng fallback extractive có citation.
+
+### 2. Chạy RAG API backend
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Kiểm tra backend:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/health"
+```
+
+### 3. Chạy giao diện Node.js
+
+```powershell
+cd web
+npm install
+npm run dev
+```
+
+Mở URL Vite hiển thị trong terminal, thường là `http://127.0.0.1:5173`.
+
+### 4. Câu hỏi demo gợi ý
+
+- `Hình phạt cho tội tàng trữ trái phép chất ma túy là gì?`
+- `Luật phòng chống ma túy quy định gì về cai nghiện?`
+- `Các bài báo nói gì về nghệ sĩ liên quan đến ma túy?`
+
+### 5. Kiểm tra test cá nhân không regression
+
+```powershell
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
+.\.venv\Scripts\python.exe -m pytest tests/ -v
+```
+
+### 6. Chạy và kiểm tra Evaluation Pipeline
+
+Để đánh giá chất lượng hệ thống RAG và so sánh A/B giữa 2 cấu hình (Config A: Có Reranking vs Config B: Không Reranking), chạy script sau:
+
+```powershell
+.\.venv\Scripts\python.exe group_project/evaluation/eval_pipeline.py
+```
+
+Kết quả đánh giá chi tiết cho 15 câu hỏi trong Golden Dataset và phân tích so sánh A/B sẽ tự động được ghi đè/cập nhật vào file [results.md](file:///d:/My%20Works/Coding/Practice/Day08_RAG_pipeline_cohort2/group_project/evaluation/results.md).
+
+Các metric đánh giá bao gồm:
+- **Faithfulness (Độ trung thực):** Đánh giá xem câu trả lời có hoàn toàn dựa trên và được củng cố bởi ngữ cảnh tìm được hay không.
+- **Answer Relevance (Độ liên quan):** Đánh giá xem câu trả lời có khớp chặt chẽ với câu hỏi và dự kiến trả lời (expected answer) hay không.
+- **Context Recall (Độ phủ ngữ cảnh):** Đánh giá xem retriever có lấy đủ các bằng chứng/ngữ cảnh cần thiết hay không.
+- **Context Precision (Độ chính xác ngữ cảnh):** Đánh giá tỷ lệ các chunk tài liệu tìm được thực sự có ích cho câu hỏi.
 
 ---
 
